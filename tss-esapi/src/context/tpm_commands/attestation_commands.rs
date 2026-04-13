@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 use crate::{
     Context, Result, ReturnCode,
-    handles::{KeyHandle, ObjectHandle},
+    handles::{KeyHandle, ObjectHandle, SessionHandle},
     structures::{
-        Attest, AttestBuffer, CreationTicket, Data, Digest, PcrSelectionList, Signature,
+        Attest, AttestBuffer, CreationTicket, Data, Digest, MaxBuffer, PcrSelectionList, Signature,
         SignatureScheme,
     },
-    tss2_esys::{Esys_Certify, Esys_CertifyCreation, Esys_GetTime, Esys_Quote},
+    tss2_esys::{
+        Esys_Certify, Esys_CertifyCreation, Esys_CertifyX509, Esys_GetCommandAuditDigest,
+        Esys_GetSessionAuditDigest, Esys_GetTime, Esys_Quote,
+    },
 };
 use log::error;
 use std::convert::TryFrom;
@@ -536,7 +539,319 @@ impl Context {
         ))
     }
 
-    // Missing function: GetSessionAuditDigest
-    // Missing function: GestCommandAuditDigest
-    // Missing function: CertifyX509
+    /// Get a signed attestation of a session audit digest.
+    ///
+    /// # Arguments
+    ///
+    /// * `privacy_admin_handle` - An [ObjectHandle] for the privacy administrator (Endorsement).
+    /// * `sign_handle` - A [KeyHandle] of the key used to sign the attestation.
+    /// * `session_handle` - A [SessionHandle] of the session to be audited.
+    /// * `qualifying_data` - [Data] to qualify the signing.
+    /// * `signing_scheme` - The [SignatureScheme] to use.
+    ///
+    /// # Details
+    ///
+    /// *From the specification*
+    /// > This command returns the current value of the session audit digest.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of `(Attest, Signature)`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use tss_esapi::{
+    /// #    Context, TctiNameConf,
+    /// #    attributes::SessionAttributesBuilder,
+    /// #    constants::SessionType,
+    /// #    handles::{ObjectHandle, SessionHandle},
+    /// #    interface_types::{
+    /// #        algorithm::{HashingAlgorithm, RsaSchemeAlgorithm},
+    /// #        key_bits::RsaKeyBits,
+    /// #        reserved_handles::Hierarchy,
+    /// #        session_handles::AuthSession,
+    /// #    },
+    /// #    structures::{Data, RsaExponent, RsaScheme, SignatureScheme, SymmetricDefinition},
+    /// #    utils::create_unrestricted_signing_rsa_public,
+    /// # };
+    /// # use std::convert::TryFrom;
+    /// # let mut context =
+    /// #     Context::new(
+    /// #         TctiNameConf::from_environment_variable().expect("Failed to get TCTI"),
+    /// #     ).expect("Failed to create Context");
+    /// # let signing_key_pub = create_unrestricted_signing_rsa_public(
+    /// #         RsaScheme::create(RsaSchemeAlgorithm::RsaSsa, Some(HashingAlgorithm::Sha256))
+    /// #             .expect("Failed to create RSA scheme"),
+    /// #     RsaKeyBits::Rsa2048,
+    /// #     RsaExponent::default(),
+    /// # )
+    /// # .expect("Failed to create an unrestricted signing rsa public structure");
+    /// # let sign_key_handle = context
+    /// #     .execute_with_nullauth_session(|ctx| {
+    /// #         ctx.create_primary(Hierarchy::Owner, signing_key_pub, None, None, None, None)
+    /// #     })
+    /// #     .unwrap()
+    /// #     .key_handle;
+    /// // Create an audit session
+    /// let audit_session = context
+    ///     .start_auth_session(
+    ///         None, None, None,
+    ///         SessionType::Hmac,
+    ///         SymmetricDefinition::AES_256_CFB,
+    ///         HashingAlgorithm::Sha256,
+    ///     )
+    ///     .expect("Failed to create audit session")
+    ///     .expect("Received invalid handle");
+    ///
+    /// let (session_attributes, session_attributes_mask) = SessionAttributesBuilder::new()
+    ///     .with_audit(true)
+    ///     .build();
+    /// context
+    ///     .tr_sess_set_attributes(audit_session, session_attributes, session_attributes_mask)
+    ///     .expect("Failed to set audit attribute");
+    ///
+    /// // Use the audit session in a command to populate its digest
+    /// context.set_sessions((Some(audit_session), None, None));
+    /// let _ = context.read_public(sign_key_handle).unwrap();
+    ///
+    /// // Get the session audit digest
+    /// let session_handle = SessionHandle::from(audit_session);
+    /// let (_attest, _signature) = context
+    ///     .execute_with_sessions(
+    ///         (Some(AuthSession::Password), Some(AuthSession::Password), None),
+    ///         |ctx| {
+    ///             ctx.get_session_audit_digest(
+    ///                 ObjectHandle::Endorsement,
+    ///                 sign_key_handle,
+    ///                 session_handle,
+    ///                 Data::try_from(vec![0xff; 16]).unwrap(),
+    ///                 SignatureScheme::Null,
+    ///             )
+    ///         },
+    ///     )
+    ///     .expect("Failed to get session audit digest");
+    /// ```
+    pub fn get_session_audit_digest(
+        &mut self,
+        privacy_admin_handle: ObjectHandle,
+        sign_handle: KeyHandle,
+        session_handle: SessionHandle,
+        qualifying_data: Data,
+        signing_scheme: SignatureScheme,
+    ) -> Result<(Attest, Signature)> {
+        let mut audit_info_ptr = null_mut();
+        let mut signature_ptr = null_mut();
+        ReturnCode::ensure_success(
+            unsafe {
+                Esys_GetSessionAuditDigest(
+                    self.mut_context(),
+                    privacy_admin_handle.into(),
+                    sign_handle.into(),
+                    session_handle.into(),
+                    self.required_session_1()?,
+                    self.required_session_2()?,
+                    self.optional_session_3(),
+                    &qualifying_data.into(),
+                    &signing_scheme.into(),
+                    &mut audit_info_ptr,
+                    &mut signature_ptr,
+                )
+            },
+            |ret| {
+                error!("Error getting session audit digest: {:#010X}", ret);
+            },
+        )?;
+
+        let audit_info = Context::ffi_data_to_owned(audit_info_ptr)?;
+        let signature = Context::ffi_data_to_owned(signature_ptr)?;
+        Ok((
+            Attest::try_from(AttestBuffer::try_from(audit_info)?)?,
+            Signature::try_from(signature)?,
+        ))
+    }
+
+    /// Get a signed attestation of the command audit digest.
+    ///
+    /// # Arguments
+    ///
+    /// * `privacy_handle` - An [ObjectHandle] for the privacy administrator (Endorsement).
+    /// * `sign_handle` - A [KeyHandle] of the key used to sign the attestation.
+    /// * `qualifying_data` - [Data] to qualify the signing.
+    /// * `signing_scheme` - The [SignatureScheme] to use.
+    ///
+    /// # Details
+    ///
+    /// *From the specification*
+    /// > This command returns the current value of the command audit digest,
+    /// > a digest of the commands being audited, and the audit hash algorithm.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of `(Attest, Signature)`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use tss_esapi::{
+    /// #    Context, TctiNameConf,
+    /// #    interface_types::{
+    /// #        algorithm::{HashingAlgorithm, RsaSchemeAlgorithm},
+    /// #        key_bits::RsaKeyBits,
+    /// #        reserved_handles::Hierarchy,
+    /// #        session_handles::AuthSession,
+    /// #    },
+    /// #    structures::{Data, RsaExponent, RsaScheme, SignatureScheme},
+    /// #    utils::create_unrestricted_signing_rsa_public,
+    /// # };
+    /// # use std::convert::TryFrom;
+    /// # let mut context =
+    /// #     Context::new(
+    /// #         TctiNameConf::from_environment_variable().expect("Failed to get TCTI"),
+    /// #     ).expect("Failed to create Context");
+    /// # let signing_key_pub = create_unrestricted_signing_rsa_public(
+    /// #         RsaScheme::create(RsaSchemeAlgorithm::RsaSsa, Some(HashingAlgorithm::Sha256))
+    /// #             .expect("Failed to create RSA scheme"),
+    /// #     RsaKeyBits::Rsa2048,
+    /// #     RsaExponent::default(),
+    /// # )
+    /// # .expect("Failed to create an unrestricted signing rsa public structure");
+    /// # let sign_key_handle = context
+    /// #     .execute_with_nullauth_session(|ctx| {
+    /// #         ctx.create_primary(Hierarchy::Owner, signing_key_pub, None, None, None, None)
+    /// #     })
+    /// #     .unwrap()
+    /// #     .key_handle;
+    /// let (_attest, _signature) = context
+    ///     .execute_with_sessions(
+    ///         (
+    ///             Some(AuthSession::Password),
+    ///             Some(AuthSession::Password),
+    ///             None,
+    ///         ),
+    ///         |ctx| {
+    ///             ctx.get_command_audit_digest(
+    ///                 tss_esapi::handles::ObjectHandle::Endorsement,
+    ///                 sign_key_handle,
+    ///                 Data::try_from(vec![0xff; 16]).unwrap(),
+    ///                 SignatureScheme::Null,
+    ///             )
+    ///         },
+    ///     )
+    ///     .expect("Failed to get command audit digest");
+    /// ```
+    pub fn get_command_audit_digest(
+        &mut self,
+        privacy_handle: ObjectHandle,
+        sign_handle: KeyHandle,
+        qualifying_data: Data,
+        signing_scheme: SignatureScheme,
+    ) -> Result<(Attest, Signature)> {
+        let mut audit_info_ptr = null_mut();
+        let mut signature_ptr = null_mut();
+        ReturnCode::ensure_success(
+            unsafe {
+                Esys_GetCommandAuditDigest(
+                    self.mut_context(),
+                    privacy_handle.into(),
+                    sign_handle.into(),
+                    self.required_session_1()?,
+                    self.required_session_2()?,
+                    self.optional_session_3(),
+                    &qualifying_data.into(),
+                    &signing_scheme.into(),
+                    &mut audit_info_ptr,
+                    &mut signature_ptr,
+                )
+            },
+            |ret| {
+                error!("Error getting command audit digest: {:#010X}", ret);
+            },
+        )?;
+
+        let audit_info = Context::ffi_data_to_owned(audit_info_ptr)?;
+        let signature = Context::ffi_data_to_owned(signature_ptr)?;
+        Ok((
+            Attest::try_from(AttestBuffer::try_from(audit_info)?)?,
+            Signature::try_from(signature)?,
+        ))
+    }
+
+    /// Produce a signed X.509 certificate.
+    ///
+    /// # Arguments
+    ///
+    /// * `object_handle` - An [ObjectHandle] of the object to be certified.
+    /// * `sign_handle` - A [KeyHandle] of the key used to sign the certificate.
+    /// * `reserved` - Reserved for future use, should be an empty [Data].
+    /// * `signing_scheme` - The [SignatureScheme] to use.
+    /// * `partial_certificate` - A [MaxBuffer] containing the partial certificate.
+    ///
+    /// # Details
+    ///
+    /// *From the specification*
+    /// > The purpose of this command is to generate an X.509 certificate that
+    /// > proves an object with a specific public key and attributes is loaded
+    /// > in the TPM.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of `(MaxBuffer, Digest, Signature)` containing the added-to-certificate
+    /// data, the TBS digest, and the signature.
+    ///
+    /// # Example
+    ///
+    /// ```rust, no_run
+    /// # use tss_esapi::{Context, TctiNameConf};
+    /// # use tss_esapi::handles::ObjectHandle;
+    /// # use tss_esapi::structures::{Data, MaxBuffer, SignatureScheme};
+    /// # let mut context =
+    /// #     Context::new(
+    /// #         TctiNameConf::from_environment_variable().expect("Failed to get TCTI"),
+    /// #     ).expect("Failed to create Context");
+    /// # // Assumes object_handle and sign_handle are properly set up
+    /// # // let (added, tbs_digest, sig) = context.certify_x509(
+    /// # //     object_handle, sign_handle, Data::default(),
+    /// # //     SignatureScheme::Null, MaxBuffer::default(),
+    /// # // ).unwrap();
+    /// ```
+    pub fn certify_x509(
+        &mut self,
+        object_handle: ObjectHandle,
+        sign_handle: KeyHandle,
+        reserved: Data,
+        signing_scheme: SignatureScheme,
+        partial_certificate: MaxBuffer,
+    ) -> Result<(MaxBuffer, Digest, Signature)> {
+        let mut added_to_certificate_ptr = null_mut();
+        let mut tbs_digest_ptr = null_mut();
+        let mut signature_ptr = null_mut();
+        ReturnCode::ensure_success(
+            unsafe {
+                Esys_CertifyX509(
+                    self.mut_context(),
+                    object_handle.into(),
+                    sign_handle.into(),
+                    self.required_session_1()?,
+                    self.optional_session_2(),
+                    self.optional_session_3(),
+                    &reserved.into(),
+                    &signing_scheme.into(),
+                    &partial_certificate.into(),
+                    &mut added_to_certificate_ptr,
+                    &mut tbs_digest_ptr,
+                    &mut signature_ptr,
+                )
+            },
+            |ret| {
+                error!("Error certifying X.509: {:#010X}", ret);
+            },
+        )?;
+
+        Ok((
+            MaxBuffer::try_from(Context::ffi_data_to_owned(added_to_certificate_ptr)?)?,
+            Digest::try_from(Context::ffi_data_to_owned(tbs_digest_ptr)?)?,
+            Signature::try_from(Context::ffi_data_to_owned(signature_ptr)?)?,
+        ))
+    }
 }
