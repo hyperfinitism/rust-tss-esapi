@@ -36,21 +36,6 @@ swtpm socket --tpm2 \
     --server type=tcp,port=2321 \
     --daemon
 
-####################
-# Start tpm2-abrmd #
-####################
-tpm2-abrmd \
-    --logger=stdout \
-    --tcti=swtpm: \
-    --allow-root \
-    --session \
-    --flush-all &
-
-#################
-# Clear the TPM #
-#################
-tpm2_startup -c -T tabrmd:bus_type=session
-
 ########################
 # Declare the examples #
 ########################
@@ -72,5 +57,5 @@ export EXAMPLES_INITIAL_DATA_FILE="/tmp/rust-tss-esapi/tss-esapi/examples/symmet
 # Run the examples #
 ####################
 for e in ${examples[@]}; do
-    TEST_TCTI=tabrmd:bus_type=session RUST_BACKTRACE=1 RUST_LOG=info cargo run --example ${e}
+    TEST_TCTI="swtpm:host=localhost,port=2321" RUST_BACKTRACE=1 RUST_LOG=info cargo run --example ${e}
 done

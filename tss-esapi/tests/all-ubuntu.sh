@@ -32,12 +32,6 @@ fi
 if [[ ! -z ${TPM2_TSS_PATH:+x} ]]; then
 	export LD_LIBRARY_PATH="${TPM2_TSS_PATH}"
 fi
-#################################
-# Run the TPM simulation server #
-#################################
-tpm_server &
-sleep 5
-tpm2_startup -c -T mssim
 
 ###################
 # Build the crate #
@@ -47,4 +41,4 @@ RUST_BACKTRACE=1 cargo build --features "$FEATURES"
 #################
 # Run the tests #
 #################
-TEST_TCTI=mssim: RUST_BACKTRACE=1 RUST_LOG=info cargo test --features "${FEATURES}" -- --test-threads=1 --nocapture
+RUST_BACKTRACE=1 RUST_LOG=info cargo test --features "${FEATURES}" -- --nocapture
