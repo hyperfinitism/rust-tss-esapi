@@ -19,13 +19,6 @@ tpm_server &
 sleep 5
 tpm2_startup -c -T mssim
 
-##########################
-# Install cargo-valgrind #
-##########################
-apt update 
-apt install -y valgrind
-cargo install cargo-valgrind
-
 #################
 # Run the tests #
 #################
