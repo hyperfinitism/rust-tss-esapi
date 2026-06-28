@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 mod algorithm_property_tests;
 mod algorithm_tests;
+mod attached_component_output_tests;
 mod attest_info_test;
 mod attest_tests;
 mod buffers_tests;

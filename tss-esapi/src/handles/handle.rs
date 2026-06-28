@@ -267,6 +267,19 @@ macro_rules! impl_handle_conversion {
     };
 }
 
+/// Attached component handle module
+pub mod attached_component {
+    use super::object::ObjectHandle;
+
+    impl_basic_handle!(
+        /// Attached component handle
+        ///
+        /// Represents an ESYS resource handle for an attached component.
+        AttachedComponentHandle
+    );
+    impl_handle_conversion!(AttachedComponentHandle, ObjectHandle);
+}
+
 /// Auth handle module
 pub mod auth {
     use super::object::ObjectHandle;

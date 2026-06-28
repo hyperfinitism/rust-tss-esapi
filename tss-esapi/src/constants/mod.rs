@@ -9,6 +9,11 @@
 mod algorithm;
 pub use algorithm::AlgorithmIdentifier;
 
+/// Representation of attached component capability selectors and output tags.
+/// Constants -> TPML_AC_CAPABILITIES section of the specification
+mod attached_component;
+pub use attached_component::AttachedComponentCapability;
+
 /// The constants defined in the TSS specification.
 #[allow(
     non_snake_case,

@@ -7,6 +7,7 @@
 // ///////////////////////////////////////////////////////
 // ESYS Handles
 // //////////////////////////////////////////////////////
+pub use handle::attached_component::AttachedComponentHandle;
 pub use handle::auth::AuthHandle;
 pub use handle::key::KeyHandle;
 pub use handle::nv_index::NvIndexHandle;

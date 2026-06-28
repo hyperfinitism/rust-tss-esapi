@@ -18,6 +18,9 @@
 // //////////////////////////////////////////////////////
 mod capability_data;
 pub use self::capability_data::CapabilityData;
+
+mod attached_component;
+pub use attached_component::AttachedComponentOutput;
 // //////////////////////////////////////////////////////
 // The names section
 // //////////////////////////////////////////////////////
@@ -131,6 +134,11 @@ pub mod tagged_pcr_property_list {
 pub use self::command_code_attributes_list::CommandCodeAttributesList;
 pub mod command_code_attributes_list {
     pub use super::lists::command_code_attributes::*;
+}
+
+pub use self::attached_component_capabilities::AttachedComponentCapabilities;
+pub mod attached_component_capabilities {
+    pub use super::lists::attached_component_capabilities::*;
 }
 
 pub(crate) use pcr::slot_collection::PcrSlotCollection;

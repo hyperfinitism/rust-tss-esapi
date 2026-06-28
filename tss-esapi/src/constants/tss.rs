@@ -56,6 +56,11 @@ pub const TPM2_ECC_BN_P256: TPM2_ECC_CURVE = 0x0010;
 pub const TPM2_ECC_BN_P638: TPM2_ECC_CURVE = 0x0011;
 pub const TPM2_ECC_SM2_P256: TPM2_ECC_CURVE = 0x0020;
 
+pub const TPM_AT_ANY: TPM_AT = 0x00000000;
+pub const TPM_AT_ERROR: TPM_AT = 0x00000001;
+pub const TPM_AT_PV1: TPM_AT = 0x00000002;
+pub const TPM_AT_VEND: TPM_AT = 0x80000000;
+
 pub const TPM2_CC_NV_UndefineSpaceSpecial: TPM2_CC = 0x0000011f;
 pub const TPM2_CC_FIRST: TPM2_CC = TPM2_CC_NV_UndefineSpaceSpecial;
 pub const TPM2_CC_EvictControl: TPM2_CC = 0x00000120;

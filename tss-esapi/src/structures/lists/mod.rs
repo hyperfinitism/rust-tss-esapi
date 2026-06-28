@@ -1,6 +1,7 @@
 // Copyright 2020 Contributors to the Parsec project.
 // SPDX-License-Identifier: Apache-2.0
 pub mod algorithm_property;
+pub mod attached_component_capabilities;
 pub mod command_code;
 pub mod command_code_attributes;
 pub mod digest;
