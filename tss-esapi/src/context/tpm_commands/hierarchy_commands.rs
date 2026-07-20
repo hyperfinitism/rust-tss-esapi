@@ -4,12 +4,19 @@ use crate::{
     Context, Result, ReturnCode,
     context::handle_manager::HandleDropAction,
     handles::{AuthHandle, KeyHandle, ObjectHandle},
-    interface_types::{YesNo, reserved_handles::Hierarchy},
+    interface_types::{
+        YesNo,
+        algorithm::HashingAlgorithm,
+        reserved_handles::{Enables, Hierarchy, HierarchyAuth},
+    },
     structures::{
         Auth, CreatePrimaryKeyResult, CreationData, CreationTicket, Data, Digest, PcrSelectionList,
         Public, SensitiveCreate, SensitiveData,
     },
-    tss2_esys::{Esys_Clear, Esys_ClearControl, Esys_CreatePrimary, Esys_HierarchyChangeAuth},
+    tss2_esys::{
+        Esys_ChangeEPS, Esys_ChangePPS, Esys_Clear, Esys_ClearControl, Esys_CreatePrimary,
+        Esys_HierarchyChangeAuth, Esys_HierarchyControl, Esys_SetPrimaryPolicy,
+    },
 };
 use log::error;
 use std::convert::{TryFrom, TryInto};
@@ -87,10 +94,208 @@ impl Context {
         })
     }
 
-    // Missing function: HierarchyControl
-    // Missing function: SetPrimaryPolicy
-    // Missing function: ChangePPS
-    // Missing function: ChangeEPS
+    /// Enables or disables use of a hierarchy.
+    ///
+    /// # Arguments
+    ///
+    /// * `enable` - The hierarchy or associated NV storage whose state will be changed.
+    /// * `state` - `true` to enable use of the hierarchy, or `false` to disable it.
+    ///
+    /// # Details
+    ///
+    /// *From the specification*
+    /// > This command enables and disables use of a hierarchy and its associated NV storage. The
+    /// > command allows phEnable, phEnableNV, shEnable, and ehEnable to be changed when the proper
+    /// > authorization is provided.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use tss_esapi::{Context, TctiNameConf};
+    /// # use tss_esapi::interface_types::{
+    /// #     reserved_handles::Enables, session_handles::AuthSession,
+    /// # };
+    /// # let mut context = Context::new(
+    /// #     TctiNameConf::from_environment_variable().expect("Failed to get TCTI"),
+    /// # ).expect("Failed to create Context");
+    /// context
+    ///     .execute_with_session(Some(AuthSession::Password), |ctx| {
+    ///         ctx.hierarchy_control(Enables::Endorsement, false)?;
+    ///         ctx.hierarchy_control(Enables::Endorsement, true)
+    ///     })
+    ///     .unwrap();
+    /// ```
+    pub fn hierarchy_control(&mut self, enable: Enables, state: bool) -> Result<()> {
+        ReturnCode::ensure_success(
+            unsafe {
+                Esys_HierarchyControl(
+                    self.mut_context(),
+                    ObjectHandle::Platform.into(),
+                    self.required_session_1()?,
+                    self.optional_session_2(),
+                    self.optional_session_3(),
+                    ObjectHandle::from(enable).into(),
+                    YesNo::from(state).into(),
+                )
+            },
+            |ret| {
+                error!("Error controlling hierarchy: {:#010X}", ret);
+            },
+        )
+    }
+
+    /// Sets the authorization policy for a hierarchy.
+    ///
+    /// # Arguments
+    ///
+    /// * `auth_handle` - The hierarchy whose authorization policy will be changed.
+    /// * `auth_policy` - The new authorization policy digest.
+    /// * `hash_algorithm` - The hash algorithm used to compute `auth_policy`. An empty policy must
+    ///   be paired with [`HashingAlgorithm::Null`].
+    ///
+    /// # Details
+    ///
+    /// *From the specification*
+    /// > This command allows setting of the authorization policy for the lockout (lockoutPolicy),
+    /// > the platform hierarchy (platformPolicy), the storage hierarchy (ownerPolicy), and the
+    /// > endorsement hierarchy (endorsementPolicy).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use tss_esapi::{Context, TctiNameConf};
+    /// # use tss_esapi::{
+    /// #     interface_types::{algorithm::HashingAlgorithm, reserved_handles::HierarchyAuth,
+    /// #         session_handles::AuthSession},
+    /// #     structures::Digest,
+    /// # };
+    /// # let mut context = Context::new(
+    /// #     TctiNameConf::from_environment_variable().expect("Failed to get TCTI"),
+    /// # ).expect("Failed to create Context");
+    /// context
+    ///     .execute_with_session(Some(AuthSession::Password), |ctx| {
+    ///         ctx.set_primary_policy(
+    ///             HierarchyAuth::Platform,
+    ///             Digest::default(),
+    ///             HashingAlgorithm::Null,
+    ///         )
+    ///     })
+    ///     .unwrap();
+    /// ```
+    pub fn set_primary_policy(
+        &mut self,
+        auth_handle: HierarchyAuth,
+        auth_policy: Digest,
+        hash_algorithm: HashingAlgorithm,
+    ) -> Result<()> {
+        ReturnCode::ensure_success(
+            unsafe {
+                Esys_SetPrimaryPolicy(
+                    self.mut_context(),
+                    ObjectHandle::from(auth_handle).into(),
+                    self.required_session_1()?,
+                    self.optional_session_2(),
+                    self.optional_session_3(),
+                    &auth_policy.into(),
+                    hash_algorithm.into(),
+                )
+            },
+            |ret| {
+                error!("Error setting primary policy: {:#010X}", ret);
+            },
+        )
+    }
+
+    /// Replaces the platform primary seed with a new random value.
+    ///
+    /// # Arguments
+    ///
+    /// This command has no command-specific arguments. The first configured session must authorize
+    /// the platform hierarchy.
+    ///
+    /// # Details
+    ///
+    /// *From the specification*
+    /// > This replaces the current platform primary seed (PPS) with a value from the RNG and sets
+    /// > platformPolicy to the default initialization value (the Empty Buffer).
+    ///
+    /// Existing objects in the platform hierarchy can no longer be loaded after this command.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use tss_esapi::{Context, TctiNameConf};
+    /// # use tss_esapi::interface_types::session_handles::AuthSession;
+    /// # let mut context = Context::new(
+    /// #     TctiNameConf::from_environment_variable().expect("Failed to get TCTI"),
+    /// # ).expect("Failed to create Context");
+    /// context
+    ///     .execute_with_session(Some(AuthSession::Password), |ctx| ctx.change_pps())
+    ///     .unwrap();
+    /// ```
+    pub fn change_pps(&mut self) -> Result<()> {
+        ReturnCode::ensure_success(
+            unsafe {
+                Esys_ChangePPS(
+                    self.mut_context(),
+                    ObjectHandle::Platform.into(),
+                    self.required_session_1()?,
+                    self.optional_session_2(),
+                    self.optional_session_3(),
+                )
+            },
+            |ret| {
+                error!("Error changing platform primary seed: {:#010X}", ret);
+            },
+        )
+    }
+
+    /// Replaces the endorsement primary seed with a new random value.
+    ///
+    /// # Arguments
+    ///
+    /// This command has no command-specific arguments. The first configured session must authorize
+    /// the platform hierarchy.
+    ///
+    /// # Details
+    ///
+    /// *From the specification*
+    /// > This replaces the current endorsement primary seed (EPS) with a value from the RNG and
+    /// > sets the Endorsement hierarchy controls to their default initialization values: ehEnable
+    /// > is SET, endorsementAuth and endorsementPolicy are both set to the Empty Buffer. It will
+    /// > flush any resident objects (transient or persistent) in the Endorsement hierarchy and not
+    /// > allow objects in the hierarchy associated with the previous EPS to be loaded.
+    ///
+    /// Existing objects in the endorsement hierarchy can no longer be loaded after this command.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use tss_esapi::{Context, TctiNameConf};
+    /// # use tss_esapi::interface_types::session_handles::AuthSession;
+    /// # let mut context = Context::new(
+    /// #     TctiNameConf::from_environment_variable().expect("Failed to get TCTI"),
+    /// # ).expect("Failed to create Context");
+    /// context
+    ///     .execute_with_session(Some(AuthSession::Password), |ctx| ctx.change_eps())
+    ///     .unwrap();
+    /// ```
+    pub fn change_eps(&mut self) -> Result<()> {
+        ReturnCode::ensure_success(
+            unsafe {
+                Esys_ChangeEPS(
+                    self.mut_context(),
+                    ObjectHandle::Platform.into(),
+                    self.required_session_1()?,
+                    self.optional_session_2(),
+                    self.optional_session_3(),
+                )
+            },
+            |ret| {
+                error!("Error changing endorsement primary seed: {:#010X}", ret);
+            },
+        )
+    }
 
     /// Clear all TPM context associated with a specific Owner
     pub fn clear(&mut self, auth_handle: AuthHandle) -> Result<()> {
