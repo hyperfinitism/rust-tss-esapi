@@ -17,6 +17,8 @@ if [[ ! -z ${USE_FROZEN_LOCKFILE:+x} ]]; then
 	cp tests/Cargo.lock.frozen ../Cargo.lock
 fi
 
+export LD_LIBRARY_PATH="$(pkg-config --variable=libdir tss2-esys)${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
 ########################################
 # Run the TPM SWTPM server for doctest #
 ########################################

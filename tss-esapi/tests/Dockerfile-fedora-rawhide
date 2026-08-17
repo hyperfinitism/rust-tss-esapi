@@ -1,8 +1,37 @@
 FROM fedora:rawhide
 
+# TODO: revert when mainline is fixed
+# RUN dnf install -y \
+# 	tpm2-tss-devel tpm2-tools \
+# 	swtpm swtpm-tools swtpm-selinux\
+# 	rust clippy cargo \
+# 	llvm llvm-devel clang pkg-config \
+# 	dbus-daemon rust-gobject-sys-devel
+
 RUN dnf install -y \
-	tpm2-tss-devel tpm2-tools \
+	libtool automake autoconf autoconf-archive openssl-devel \
+	tpm2-tools git \
 	swtpm swtpm-tools swtpm-selinux\
 	rust clippy cargo \
 	llvm llvm-devel clang pkg-config \
-	dbus-daemon rust-gobject-sys-devel
+	dbus-daemon rust-gobject-sys-devel \
+	&& dnf builddep -y tpm2-tss \
+    && dnf clean all
+
+# Download and install the TSS library
+ENV TPM2_TSS_BINDINGS_VERSION=4.1.3
+ARG TPM2_TSS_VERSION=$TPM2_TSS_BINDINGS_VERSION
+ENV TPM2_TSS_VERSION=$TPM2_TSS_VERSION
+ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+
+RUN git clone https://github.com/tpm2-software/tpm2-tss.git --branch $TPM2_TSS_VERSION
+RUN cd tpm2-tss \
+	&& ./bootstrap \
+	&& mkdir -p /usr/local/tpm2-tss \
+	&& ./configure --disable-fapi --with-pkgconfigdir=/usr/local/tpm2-tss \
+	&& make -j$(nproc) \
+	&& make install \
+	&& ldconfig \
+	&& rm -rf /tpm2-tss
+
+ENV PKG_CONFIG_PATH=/usr/local/tpm2-tss
