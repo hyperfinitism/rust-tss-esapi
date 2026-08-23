@@ -12,8 +12,7 @@ RUN zypper install -y \
     tpm2-0-tss-devel tpm2.0-tools \
     swtpm \
     cargo \
-    clang \
-    dbus-1-daemon
+    clang
 
 # Instead of bind mounting, we could do this instead.
 # COPY . /usr/src/rust-tss-esapi

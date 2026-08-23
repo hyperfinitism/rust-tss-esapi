@@ -6,7 +6,7 @@ FROM fedora:rawhide
 # 	swtpm swtpm-tools swtpm-selinux\
 # 	rust clippy cargo \
 # 	llvm llvm-devel clang pkg-config \
-# 	dbus-daemon rust-gobject-sys-devel
+# 	rust-gobject-sys-devel
 
 RUN dnf install -y \
 	libtool automake autoconf autoconf-archive openssl-devel \
@@ -14,7 +14,7 @@ RUN dnf install -y \
 	swtpm swtpm-tools swtpm-selinux\
 	rust clippy cargo \
 	llvm llvm-devel clang pkg-config \
-	dbus-daemon rust-gobject-sys-devel \
+	rust-gobject-sys-devel \
 	&& dnf builddep -y tpm2-tss \
     && dnf clean all
 
