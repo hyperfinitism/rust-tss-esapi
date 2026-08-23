@@ -4,8 +4,8 @@ use crate::Context;
 use crate::{
     Result, ReturnCode,
     handles::ObjectHandle,
-    structures::{Data, EncryptedSecret, Private, Public, SymmetricDefinitionObject},
-    tss2_esys::{Esys_Duplicate, Esys_Import},
+    structures::{Data, EncryptedSecret, Name, Private, Public, SymmetricDefinitionObject},
+    tss2_esys::{Esys_Duplicate, Esys_Import, Esys_Rewrap},
 };
 use log::error;
 
@@ -333,7 +333,277 @@ impl Context {
         ))
     }
 
-    // Missing function: Rewrap
+    /// Re-wrap an already duplicated object for a new parent.
+    ///
+    /// # Arguments
+    ///
+    /// * `old_parent` - An [ObjectHandle] of the parent that protects `in_duplicate`.
+    /// * `new_parent` - An [ObjectHandle] of the parent that will protect the result.
+    /// * `in_duplicate` - The [Private] area encrypted using a key derived from `in_sym_seed`.
+    /// * `name` - The [Name] of the object being re-wrapped.
+    /// * `in_sym_seed` - The [EncryptedSecret] seed protected by `old_parent`.
+    ///
+    /// # Details
+    ///
+    /// *From the specification*
+    /// > This command allows the TPM to serve in the role as a Duplication Authority.
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing the re-wrapped [Private] area and the [EncryptedSecret]
+    /// seed protected by `new_parent`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use std::convert::{TryFrom, TryInto};
+    /// # use tss_esapi::{Context, TctiNameConf};
+    /// # use tss_esapi::attributes::{ObjectAttributesBuilder, SessionAttributesBuilder};
+    /// # use tss_esapi::constants::SessionType;
+    /// # use tss_esapi::handles::{ObjectHandle, SessionHandle};
+    /// # use tss_esapi::interface_types::{
+    /// #     algorithm::{HashingAlgorithm, PublicAlgorithm},
+    /// #     ecc::EccCurve,
+    /// #     key_bits::RsaKeyBits,
+    /// #     reserved_handles::Hierarchy,
+    /// #     session_handles::PolicySession,
+    /// # };
+    /// # use tss_esapi::structures::{
+    /// #     EccPoint, EccScheme, KeyDerivationFunctionScheme, PublicBuilder,
+    /// #     PublicEccParametersBuilder, RsaExponent, SymmetricDefinition,
+    /// #     SymmetricDefinitionObject,
+    /// # };
+    /// # use tss_esapi::utils::create_restricted_decryption_rsa_public;
+    /// # let mut context = Context::new(
+    /// #     TctiNameConf::from_environment_variable().expect("Failed to get TCTI"),
+    /// # )
+    /// # .expect("Failed to create Context");
+    /// # let old_parent_public = create_restricted_decryption_rsa_public(
+    /// #     SymmetricDefinitionObject::AES_128_CFB,
+    /// #     RsaKeyBits::Rsa2048,
+    /// #     RsaExponent::default(),
+    /// # )
+    /// # .expect("Failed to create old parent public area");
+    /// # let new_parent_public = create_restricted_decryption_rsa_public(
+    /// #     SymmetricDefinitionObject::AES_256_CFB,
+    /// #     RsaKeyBits::Rsa2048,
+    /// #     RsaExponent::default(),
+    /// # )
+    /// # .expect("Failed to create new parent public area");
+    /// # let old_parent = context
+    /// #     .execute_with_nullauth_session(|ctx| {
+    /// #         ctx.create_primary(
+    /// #             Hierarchy::Owner,
+    /// #             old_parent_public,
+    /// #             None,
+    /// #             None,
+    /// #             None,
+    /// #             None,
+    /// #         )
+    /// #     })
+    /// #     .expect("Failed to create old parent")
+    /// #     .key_handle;
+    /// # let new_parent = context
+    /// #     .execute_with_nullauth_session(|ctx| {
+    /// #         ctx.create_primary(
+    /// #             Hierarchy::Owner,
+    /// #             new_parent_public,
+    /// #             None,
+    /// #             None,
+    /// #             None,
+    /// #             None,
+    /// #         )
+    /// #     })
+    /// #     .expect("Failed to create new parent")
+    /// #     .key_handle;
+    /// # let old_parent_name = context
+    /// #     .read_public(old_parent)
+    /// #     .expect("Failed to read old parent")
+    /// #     .1;
+    /// # let trial_session = context
+    /// #     .start_auth_session(
+    /// #         None,
+    /// #         None,
+    /// #         None,
+    /// #         SessionType::Trial,
+    /// #         SymmetricDefinition::AES_256_CFB,
+    /// #         HashingAlgorithm::Sha256,
+    /// #     )
+    /// #     .expect("Failed to create trial session")
+    /// #     .expect("Received invalid handle");
+    /// # let trial_policy =
+    /// #     PolicySession::try_from(trial_session).expect("Failed to convert trial session");
+    /// # context
+    /// #     .policy_duplication_select(
+    /// #         trial_policy,
+    /// #         Vec::<u8>::new().try_into().expect("Failed to create empty Name"),
+    /// #         old_parent_name.clone(),
+    /// #         false,
+    /// #     )
+    /// #     .expect("Failed to compute duplication policy");
+    /// # let policy_digest = context
+    /// #     .policy_get_digest(trial_policy)
+    /// #     .expect("Failed to get policy digest");
+    /// # context
+    /// #     .flush_context(SessionHandle::from(trial_session).into())
+    /// #     .expect("Failed to flush trial session");
+    /// # let child_attributes = ObjectAttributesBuilder::new()
+    /// #     .with_fixed_tpm(false)
+    /// #     .with_fixed_parent(false)
+    /// #     .with_sensitive_data_origin(true)
+    /// #     .with_user_with_auth(true)
+    /// #     .with_decrypt(true)
+    /// #     .with_sign_encrypt(true)
+    /// #     .with_restricted(false)
+    /// #     .build()
+    /// #     .expect("Failed to create child attributes");
+    /// # let child_public = PublicBuilder::new()
+    /// #     .with_public_algorithm(PublicAlgorithm::Ecc)
+    /// #     .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
+    /// #     .with_object_attributes(child_attributes)
+    /// #     .with_auth_policy(policy_digest)
+    /// #     .with_ecc_parameters(
+    /// #         PublicEccParametersBuilder::new()
+    /// #             .with_ecc_scheme(EccScheme::Null)
+    /// #             .with_curve(EccCurve::NistP256)
+    /// #             .with_is_signing_key(false)
+    /// #             .with_is_decryption_key(true)
+    /// #             .with_restricted(false)
+    /// #             .with_key_derivation_function_scheme(KeyDerivationFunctionScheme::Null)
+    /// #             .build()
+    /// #             .expect("Failed to create child parameters"),
+    /// #     )
+    /// #     .with_ecc_unique_identifier(EccPoint::default())
+    /// #     .build()
+    /// #     .expect("Failed to create child public area");
+    /// # let create_result = context
+    /// #     .execute_with_nullauth_session(|ctx| {
+    /// #         ctx.create(new_parent, child_public, None, None, None, None)
+    /// #     })
+    /// #     .expect("Failed to create child object");
+    /// # let child_public = create_result.out_public.clone();
+    /// # let child = context
+    /// #     .execute_with_nullauth_session(|ctx| {
+    /// #         ctx.load(new_parent, create_result.out_private, create_result.out_public)
+    /// #     })
+    /// #     .expect("Failed to load child object");
+    /// # let child_name = context
+    /// #     .read_public(child)
+    /// #     .expect("Failed to read child object")
+    /// #     .1;
+    /// # let policy_session = context
+    /// #     .start_auth_session(
+    /// #         None,
+    /// #         None,
+    /// #         None,
+    /// #         SessionType::Policy,
+    /// #         SymmetricDefinition::AES_256_CFB,
+    /// #         HashingAlgorithm::Sha256,
+    /// #     )
+    /// #     .expect("Failed to create policy session")
+    /// #     .expect("Received invalid handle");
+    /// # let (attributes, mask) = SessionAttributesBuilder::new()
+    /// #     .with_decrypt(true)
+    /// #     .with_encrypt(true)
+    /// #     .build();
+    /// # context
+    /// #     .tr_sess_set_attributes(policy_session, attributes, mask)
+    /// #     .expect("Failed to set policy session attributes");
+    /// # let policy =
+    /// #     PolicySession::try_from(policy_session).expect("Failed to convert policy session");
+    /// # context
+    /// #     .policy_duplication_select(policy, child_name.clone(), old_parent_name, false)
+    /// #     .expect("Failed to satisfy duplication policy");
+    /// # context.set_sessions((Some(policy_session), None, None));
+    /// # let (encryption_key, duplicate, in_sym_seed) = context
+    /// #     .duplicate(
+    /// #         child.into(),
+    /// #         old_parent.into(),
+    /// #         None,
+    /// #         SymmetricDefinitionObject::Null,
+    /// #     )
+    /// #     .expect("Failed to duplicate child object");
+    /// # context.clear_sessions();
+    /// # context
+    /// #     .flush_context(SessionHandle::from(policy_session).into())
+    /// #     .expect("Failed to flush policy session");
+    /// let (out_duplicate, out_sym_seed) = context
+    ///     .execute_with_nullauth_session(|ctx| {
+    ///         ctx.rewrap(
+    ///             old_parent.into(),
+    ///             new_parent.into(),
+    ///             duplicate,
+    ///             child_name,
+    ///             in_sym_seed,
+    ///         )
+    ///     })
+    ///     .expect("Failed to re-wrap duplicated object");
+    /// # context
+    /// #     .flush_context(child.into())
+    /// #     .expect("Failed to flush child");
+    /// # let imported_private = context
+    /// #     .execute_with_nullauth_session(|ctx| {
+    /// #         ctx.import(
+    /// #             new_parent.into(),
+    /// #             Some(encryption_key),
+    /// #             child_public.clone(),
+    /// #             out_duplicate,
+    /// #             out_sym_seed,
+    /// #             SymmetricDefinitionObject::Null,
+    /// #         )
+    /// #     })
+    /// #     .expect("Failed to import re-wrapped object");
+    /// # let imported_child = context
+    /// #     .execute_with_nullauth_session(|ctx| {
+    /// #         ctx.load(new_parent, imported_private, child_public)
+    /// #     })
+    /// #     .expect("Failed to load imported object");
+    /// # context
+    /// #     .flush_context(imported_child.into())
+    /// #     .expect("Failed to flush imported child");
+    /// # context
+    /// #     .flush_context(old_parent.into())
+    /// #     .expect("Failed to flush old parent");
+    /// # context
+    /// #     .flush_context(new_parent.into())
+    /// #     .expect("Failed to flush new parent");
+    /// ```
+    pub fn rewrap(
+        &mut self,
+        old_parent: ObjectHandle,
+        new_parent: ObjectHandle,
+        in_duplicate: Private,
+        name: Name,
+        in_sym_seed: EncryptedSecret,
+    ) -> Result<(Private, EncryptedSecret)> {
+        let mut out_duplicate_ptr = null_mut();
+        let mut out_sym_seed_ptr = null_mut();
+        ReturnCode::ensure_success(
+            unsafe {
+                Esys_Rewrap(
+                    self.mut_context(),
+                    old_parent.into(),
+                    new_parent.into(),
+                    self.required_session_1()?,
+                    self.optional_session_2(),
+                    self.optional_session_3(),
+                    &in_duplicate.into(),
+                    &name.into(),
+                    &in_sym_seed.into(),
+                    &mut out_duplicate_ptr,
+                    &mut out_sym_seed_ptr,
+                )
+            },
+            |ret| {
+                error!("Error when performing rewrap: {:#010X}", ret);
+            },
+        )?;
+
+        Ok((
+            Private::try_from(Context::ffi_data_to_owned(out_duplicate_ptr)?)?,
+            EncryptedSecret::try_from(Context::ffi_data_to_owned(out_sym_seed_ptr)?)?,
+        ))
+    }
 
     /// Import attaches imported object to a new parent.
     ///
