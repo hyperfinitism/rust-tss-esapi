@@ -28,6 +28,66 @@ mod test_create_primary {
     }
 }
 
+mod test_hierarchy_control {
+    use crate::common::create_ctx_with_session;
+    use tss_esapi::interface_types::reserved_handles::Enables;
+
+    #[test]
+    fn test_hierarchy_control() {
+        let mut context = create_ctx_with_session();
+
+        context
+            .hierarchy_control(Enables::Endorsement, false)
+            .unwrap();
+        context
+            .hierarchy_control(Enables::Endorsement, true)
+            .unwrap();
+    }
+}
+
+mod test_set_primary_policy {
+    use crate::common::create_ctx_with_session;
+    use tss_esapi::{
+        interface_types::{algorithm::HashingAlgorithm, reserved_handles::HierarchyAuth},
+        structures::Digest,
+    };
+
+    #[test]
+    fn test_set_primary_policy() {
+        let mut context = create_ctx_with_session();
+        let policy = Digest::from_bytes(&[0xAA; 32]).unwrap();
+
+        context
+            .set_primary_policy(HierarchyAuth::Platform, policy, HashingAlgorithm::Sha256)
+            .unwrap();
+        context
+            .set_primary_policy(
+                HierarchyAuth::Platform,
+                Digest::default(),
+                HashingAlgorithm::Null,
+            )
+            .unwrap();
+    }
+}
+
+mod test_change_primary_seeds {
+    use crate::common::create_ctx_with_session;
+
+    #[test]
+    fn test_change_pps() {
+        let mut context = create_ctx_with_session();
+
+        context.change_pps().unwrap();
+    }
+
+    #[test]
+    fn test_change_eps() {
+        let mut context = create_ctx_with_session();
+
+        context.change_eps().unwrap();
+    }
+}
+
 mod test_clear {
     use crate::common::create_ctx_with_session;
     use tss_esapi::handles::AuthHandle;
