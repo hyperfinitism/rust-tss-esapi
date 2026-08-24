@@ -5,17 +5,20 @@ use crate::{
     attributes::LocalityAttributes,
     constants::CommandCode,
     handles::{AuthHandle, NvIndexHandle, ObjectHandle, SessionHandle},
-    interface_types::{YesNo, reserved_handles::NvAuth, session_handles::PolicySession},
+    interface_types::{
+        ArithmeticComparison, YesNo, reserved_handles::NvAuth, session_handles::PolicySession,
+    },
     structures::{
         AuthTicket, Digest, DigestList, Name, Nonce, PcrSelectionList, Signature, Timeout,
         VerifiedTicket,
     },
     tss2_esys::{
         Esys_PolicyAuthValue, Esys_PolicyAuthorize, Esys_PolicyAuthorizeNV, Esys_PolicyCommandCode,
-        Esys_PolicyCpHash, Esys_PolicyDuplicationSelect, Esys_PolicyGetDigest, Esys_PolicyLocality,
-        Esys_PolicyNameHash, Esys_PolicyNvWritten, Esys_PolicyOR, Esys_PolicyPCR,
-        Esys_PolicyPassword, Esys_PolicyPhysicalPresence, Esys_PolicySecret, Esys_PolicySigned,
-        Esys_PolicyTemplate,
+        Esys_PolicyCounterTimer, Esys_PolicyCpHash, Esys_PolicyDuplicationSelect,
+        Esys_PolicyGetDigest, Esys_PolicyLocality, Esys_PolicyNV, Esys_PolicyNameHash,
+        Esys_PolicyNvWritten, Esys_PolicyOR, Esys_PolicyPCR, Esys_PolicyPassword,
+        Esys_PolicyPhysicalPresence, Esys_PolicySecret, Esys_PolicySigned, Esys_PolicyTemplate,
+        Esys_PolicyTicket,
     },
 };
 use log::error;
@@ -111,7 +114,136 @@ impl Context {
         ))
     }
 
-    // Missing function: PolicyTicket
+    /// Include a policy ticket in the policy evaluation.
+    ///
+    /// # Arguments
+    ///
+    /// * `policy_session` - The [PolicySession] being extended.
+    /// * `timeout` - The [Timeout] returned when `ticket` was produced.
+    /// * `cp_hash_a` - A [Digest] of the command parameters for the command being authorized.
+    /// * `policy_ref` - A [Nonce] associated with the policy.
+    /// * `auth_name` - The [Name] of the entity that provided the authorization.
+    /// * `ticket` - The [AuthTicket] produced by a previous policy command.
+    ///
+    /// # Details
+    ///
+    /// *From the specification*
+    /// > This command is similar to TPM2_PolicySigned() except that it takes a
+    /// > ticket instead of a signed authorization. The ticket represents a
+    /// > validated authorization that had an expiration time associated with it.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use std::convert::TryFrom;
+    /// use tss_esapi::{
+    ///     Context, TctiNameConf,
+    ///     constants::SessionType,
+    ///     handles::{AuthHandle, SessionHandle},
+    ///     interface_types::{algorithm::HashingAlgorithm, session_handles::PolicySession},
+    ///     structures::{Digest, Nonce, SymmetricDefinition},
+    /// };
+    ///
+    /// let mut context = Context::new(
+    ///     TctiNameConf::from_environment_variable().expect("Failed to get TCTI"),
+    /// )
+    /// .expect("Failed to create Context");
+    /// let trial_session = context
+    ///     .start_auth_session(
+    ///         None,
+    ///         None,
+    ///         None,
+    ///         SessionType::Trial,
+    ///         SymmetricDefinition::AES_256_CFB,
+    ///         HashingAlgorithm::Sha256,
+    ///     )
+    ///     .expect("Failed to create trial session")
+    ///     .expect("Received invalid handle");
+    /// let trial_policy_session =
+    ///     PolicySession::try_from(trial_session).expect("Failed to convert policy session");
+    /// let cp_hash_a = Digest::default();
+    /// let policy_ref = Nonce::default();
+    ///
+    /// // PolicySecret with no expiration returns a NULL ticket. PolicyTicket must
+    /// // reject it, which exercises the command without fabricating TPM-protected data.
+    /// let (timeout, null_ticket) = context
+    ///     .execute_with_nullauth_session(|ctx| {
+    ///         ctx.policy_secret(
+    ///             trial_policy_session,
+    ///             AuthHandle::Endorsement,
+    ///             Nonce::default(),
+    ///             cp_hash_a.clone(),
+    ///             policy_ref.clone(),
+    ///             None,
+    ///         )
+    ///     })
+    ///     .expect("Failed to call PolicySecret");
+    /// let auth_name = context
+    ///     .tr_get_name(AuthHandle::Endorsement.into())
+    ///     .expect("Failed to get endorsement Name");
+    /// let second_trial_session = context
+    ///     .start_auth_session(
+    ///         None,
+    ///         None,
+    ///         None,
+    ///         SessionType::Trial,
+    ///         SymmetricDefinition::AES_256_CFB,
+    ///         HashingAlgorithm::Sha256,
+    ///     )
+    ///     .expect("Failed to create second trial session")
+    ///     .expect("Received invalid handle");
+    /// let second_policy_session = PolicySession::try_from(second_trial_session)
+    ///     .expect("Failed to convert second policy session");
+    ///
+    /// assert!(
+    ///     context
+    ///         .policy_ticket(
+    ///             second_policy_session,
+    ///             timeout,
+    ///             cp_hash_a,
+    ///             policy_ref,
+    ///             auth_name,
+    ///             null_ticket,
+    ///         )
+    ///         .is_err(),
+    ///     "PolicyTicket unexpectedly accepted a NULL ticket",
+    /// );
+    /// context
+    ///     .flush_context(SessionHandle::from(trial_session).into())
+    ///     .expect("Failed to flush first trial session");
+    /// context
+    ///     .flush_context(SessionHandle::from(second_trial_session).into())
+    ///     .expect("Failed to flush second trial session");
+    /// ```
+    pub fn policy_ticket(
+        &mut self,
+        policy_session: PolicySession,
+        timeout: Timeout,
+        cp_hash_a: Digest,
+        policy_ref: Nonce,
+        auth_name: Name,
+        ticket: AuthTicket,
+    ) -> Result<()> {
+        ReturnCode::ensure_success(
+            unsafe {
+                Esys_PolicyTicket(
+                    self.mut_context(),
+                    SessionHandle::from(policy_session).into(),
+                    self.optional_session_1(),
+                    self.optional_session_2(),
+                    self.optional_session_3(),
+                    &timeout.into(),
+                    &cp_hash_a.into(),
+                    &policy_ref.into(),
+                    &auth_name.into(),
+                    &ticket.try_into()?,
+                )
+            },
+            |ret| {
+                error!("Error when computing policy ticket: {:#010X}", ret);
+            },
+        )
+    }
 
     /// Cause conditional gating of a policy based on an OR'd condition.
     ///
@@ -216,8 +348,222 @@ impl Context {
         )
     }
 
-    // Missing function: PolicyNV
-    // Missing function: PolicyCounterTimer
+    /// Cause conditional gating of a policy based on the contents of an NV index.
+    ///
+    /// # Arguments
+    ///
+    /// * `policy_session` - The [PolicySession] being extended.
+    /// * `auth_handle` - Handle indicating the source of authorization for the NV index.
+    /// * `nv_index_handle` - The [NvIndexHandle] of the NV index to check.
+    /// * `operand_b` - A [Digest] used as the second operand in the comparison.
+    /// * `offset` - The offset in the NV index at which the first operand begins.
+    /// * `operation` - The [ArithmeticComparison] operation.
+    ///
+    /// # Details
+    ///
+    /// *From the specification*
+    /// > This command is used to cause conditional gating of a policy based
+    /// > on the contents of an NV Index.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use std::convert::TryFrom;
+    /// use tss_esapi::{
+    ///     Context, TctiNameConf,
+    ///     attributes::NvIndexAttributesBuilder,
+    ///     constants::SessionType,
+    ///     handles::{NvIndexTpmHandle, SessionHandle},
+    ///     interface_types::{
+    ///         ArithmeticComparison,
+    ///         algorithm::HashingAlgorithm,
+    ///         reserved_handles::{NvAuth, Provision},
+    ///         session_handles::PolicySession,
+    ///     },
+    ///     structures::{Digest, MaxNvBuffer, NvPublicBuilder, SymmetricDefinition},
+    /// };
+    ///
+    /// let mut context = Context::new(
+    ///     TctiNameConf::from_environment_variable().expect("Failed to get TCTI"),
+    /// )
+    /// .expect("Failed to create Context");
+    /// let nv_index =
+    ///     NvIndexTpmHandle::new(0x01500041).expect("Failed to create NV index TPM handle");
+    /// let nv_attributes = NvIndexAttributesBuilder::new()
+    ///     .with_owner_write(true)
+    ///     .with_owner_read(true)
+    ///     .build()
+    ///     .expect("Failed to create NV index attributes");
+    /// let nv_public = NvPublicBuilder::new()
+    ///     .with_nv_index(nv_index)
+    ///     .with_index_name_algorithm(HashingAlgorithm::Sha256)
+    ///     .with_index_attributes(nv_attributes)
+    ///     .with_data_area_size(8)
+    ///     .build()
+    ///     .expect("Failed to build NvPublic");
+    /// let nv_index_handle = context
+    ///     .execute_with_nullauth_session(|ctx| {
+    ///         ctx.nv_define_space(Provision::Owner, None, nv_public)
+    ///     })
+    ///     .expect("Failed to define NV space");
+    /// context
+    ///     .execute_with_nullauth_session(|ctx| {
+    ///         ctx.nv_write(
+    ///             NvAuth::Owner,
+    ///             nv_index_handle,
+    ///             MaxNvBuffer::try_from(vec![0u8; 8]).expect("Failed to create NV data"),
+    ///             0,
+    ///         )
+    ///     })
+    ///     .expect("Failed to write NV data");
+    /// let trial_session = context
+    ///     .start_auth_session(
+    ///         None,
+    ///         None,
+    ///         None,
+    ///         SessionType::Trial,
+    ///         SymmetricDefinition::AES_256_CFB,
+    ///         HashingAlgorithm::Sha256,
+    ///     )
+    ///     .expect("Failed to create trial session")
+    ///     .expect("Received invalid handle");
+    /// let policy_session =
+    ///     PolicySession::try_from(trial_session).expect("Failed to convert policy session");
+    ///
+    /// let policy_result = context.execute_with_nullauth_session(|ctx| {
+    ///     ctx.policy_nv(
+    ///         policy_session,
+    ///         NvAuth::Owner,
+    ///         nv_index_handle,
+    ///         Digest::try_from(vec![0u8; 8]).expect("Failed to create operand"),
+    ///         0,
+    ///         ArithmeticComparison::Eq,
+    ///     )
+    /// });
+    /// context
+    ///     .execute_with_nullauth_session(|ctx| {
+    ///         ctx.nv_undefine_space(Provision::Owner, nv_index_handle)
+    ///     })
+    ///     .expect("Failed to undefine NV space");
+    /// context
+    ///     .flush_context(SessionHandle::from(trial_session).into())
+    ///     .expect("Failed to flush trial session");
+    /// policy_result.expect("Failed to call PolicyNV");
+    /// ```
+    pub fn policy_nv(
+        &mut self,
+        policy_session: PolicySession,
+        auth_handle: NvAuth,
+        nv_index_handle: NvIndexHandle,
+        operand_b: Digest,
+        offset: u16,
+        operation: ArithmeticComparison,
+    ) -> Result<()> {
+        ReturnCode::ensure_success(
+            unsafe {
+                Esys_PolicyNV(
+                    self.mut_context(),
+                    AuthHandle::from(auth_handle).into(),
+                    nv_index_handle.into(),
+                    SessionHandle::from(policy_session).into(),
+                    self.required_session_1()?,
+                    self.optional_session_2(),
+                    self.optional_session_3(),
+                    &operand_b.into(),
+                    offset,
+                    operation.into(),
+                )
+            },
+            |ret| {
+                error!("Error when computing policy NV: {:#010X}", ret);
+            },
+        )
+    }
+
+    /// Cause conditional gating of a policy based on the TPM's counter/timer.
+    ///
+    /// # Arguments
+    ///
+    /// * `policy_session` - The [PolicySession] being extended.
+    /// * `operand_b` - A [Digest] used as the second operand in the comparison.
+    /// * `offset` - The offset in the `TPMS_TIME_INFO` structure at which the first operand begins.
+    /// * `operation` - The [ArithmeticComparison] operation.
+    ///
+    /// # Details
+    ///
+    /// *From the specification*
+    /// > This command is used to cause conditional gating of a policy based
+    /// > on the contents of the TPMS_TIME_INFO structure.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use std::convert::TryFrom;
+    /// use tss_esapi::{
+    ///     Context, TctiNameConf,
+    ///     constants::SessionType,
+    ///     handles::SessionHandle,
+    ///     interface_types::{
+    ///         ArithmeticComparison, algorithm::HashingAlgorithm, session_handles::PolicySession,
+    ///     },
+    ///     structures::{Digest, SymmetricDefinition},
+    /// };
+    ///
+    /// let mut context = Context::new(
+    ///     TctiNameConf::from_environment_variable().expect("Failed to get TCTI"),
+    /// )
+    /// .expect("Failed to create Context");
+    /// let trial_session = context
+    ///     .start_auth_session(
+    ///         None,
+    ///         None,
+    ///         None,
+    ///         SessionType::Trial,
+    ///         SymmetricDefinition::AES_256_CFB,
+    ///         HashingAlgorithm::Sha256,
+    ///     )
+    ///     .expect("Failed to create trial session")
+    ///     .expect("Received invalid handle");
+    /// let policy_session =
+    ///     PolicySession::try_from(trial_session).expect("Failed to convert policy session");
+    ///
+    /// context
+    ///     .policy_counter_timer(
+    ///         policy_session,
+    ///         Digest::try_from(vec![0u8; 8]).expect("Failed to create operand"),
+    ///         0,
+    ///         ArithmeticComparison::UnsignedGe,
+    ///     )
+    ///     .expect("Failed to call PolicyCounterTimer");
+    /// context
+    ///     .flush_context(SessionHandle::from(trial_session).into())
+    ///     .expect("Failed to flush trial session");
+    /// ```
+    pub fn policy_counter_timer(
+        &mut self,
+        policy_session: PolicySession,
+        operand_b: Digest,
+        offset: u16,
+        operation: ArithmeticComparison,
+    ) -> Result<()> {
+        ReturnCode::ensure_success(
+            unsafe {
+                Esys_PolicyCounterTimer(
+                    self.mut_context(),
+                    SessionHandle::from(policy_session).into(),
+                    self.optional_session_1(),
+                    self.optional_session_2(),
+                    self.optional_session_3(),
+                    &operand_b.into(),
+                    offset,
+                    operation.into(),
+                )
+            },
+            |ret| {
+                error!("Error when computing policy counter timer: {:#010X}", ret);
+            },
+        )
+    }
 
     /// Cause conditional gating of a policy based on command code of authorized command.
     ///
