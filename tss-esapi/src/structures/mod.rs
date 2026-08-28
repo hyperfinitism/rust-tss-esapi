@@ -28,6 +28,7 @@ pub use names::name::Name;
 // //////////////////////////////////////////////////////
 mod result;
 pub use result::CreateKeyResult;
+pub use result::CreateLoadedResult;
 pub use result::CreatePrimaryKeyResult;
 pub use result::PcrAllocateResult;
 // //////////////////////////////////////////////////////

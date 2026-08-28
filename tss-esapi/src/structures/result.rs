@@ -16,6 +16,17 @@ pub struct CreateKeyResult {
     pub creation_ticket: CreationTicket,
 }
 
+/// Result returned by [`Context::create_loaded`](crate::Context::create_loaded).
+#[allow(missing_debug_implementations)]
+pub struct CreateLoadedResult {
+    /// Handle of the newly created and loaded object.
+    pub key_handle: KeyHandle,
+    /// Sensitive area of the object. This is empty for primary and derived objects.
+    pub out_private: Private,
+    /// Public area of the newly created object.
+    pub out_public: Public,
+}
+
 #[allow(missing_debug_implementations)]
 pub struct CreatePrimaryKeyResult {
     pub key_handle: KeyHandle,

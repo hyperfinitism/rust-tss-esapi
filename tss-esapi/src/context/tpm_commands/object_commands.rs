@@ -2,23 +2,26 @@
 // SPDX-License-Identifier: Apache-2.0
 mod create_command_input;
 mod create_command_output;
+mod create_loaded_command_input;
 
 use crate::{
     Context, Error, Result, ReturnCode, WrapperErrorKind,
     context::handle_manager::HandleDropAction,
+    ffi::take_from_esys,
     handles::{KeyHandle, ObjectHandle, TpmHandle},
     interface_types::reserved_handles::Hierarchy,
     structures::{
-        Auth, CreateKeyResult, Data, Digest, EncryptedSecret, IdObject, Name, PcrSelectionList,
-        Private, Public, Sensitive, SensitiveData,
+        Auth, CreateKeyResult, CreateLoadedResult, Data, Digest, EncryptedSecret, IdObject, Name,
+        PcrSelectionList, Private, Public, PublicTemplate, Sensitive, SensitiveData,
     },
     tss2_esys::{
-        Esys_ActivateCredential, Esys_Create, Esys_Load, Esys_LoadExternal, Esys_MakeCredential,
-        Esys_ObjectChangeAuth, Esys_ReadPublic, Esys_Unseal,
+        Esys_ActivateCredential, Esys_Create, Esys_CreateLoaded, Esys_Load, Esys_LoadExternal,
+        Esys_MakeCredential, Esys_ObjectChangeAuth, Esys_ReadPublic, Esys_Unseal,
     },
 };
 use create_command_input::CreateCommandInputHandler;
 use create_command_output::CreateCommandOutputHandler;
+use create_loaded_command_input::CreateLoadedCommandInputHandler;
 use log::error;
 use std::convert::{TryFrom, TryInto};
 use std::ptr::{null, null_mut};
@@ -413,5 +416,146 @@ impl Context {
         Private::try_from(Context::ffi_data_to_owned(out_private_ptr)?)
     }
 
-    // Missing function: CreateLoaded
+    /// Creates an object and loads it into the TPM.
+    ///
+    /// The input validation is the same as for [`Self::create`] and [`Self::create_primary`],
+    /// except that a derived object requires `sensitiveDataOrigin` to be clear. The returned handle
+    /// is registered with the context and is flushed when the context is dropped.
+    ///
+    /// # Deprecated
+    ///
+    /// `TPM2_CreateLoaded` was deprecated in version 184 of the TPM 2.0 Library Specification.
+    /// Use [`Self::create`] followed by [`Self::load`] when creating an ordinary object.
+    ///
+    /// # Arguments
+    ///
+    /// * `parent_handle` - Parent key, hierarchy, or primary seed used to create the object.
+    /// * `public_template` - Public or derivation template for the new object.
+    /// * `auth_value` - Optional authorization value for the new object.
+    /// * `sensitive_data` - Optional sensitive data to place in the new object.
+    ///
+    /// # Returns
+    ///
+    /// A [CreateLoadedResult] containing the loaded handle and the object's private and public
+    /// areas. The private area is empty when a primary or derived object is created.
+    ///
+    /// # Details
+    ///
+    /// *From the specification*
+    /// > This command creates an object and loads it in the TPM. This command allows creation
+    /// > of any type of object (Primary, Ordinary, or Derived) depending on the type of parentHandle.
+    /// > If parentHandle references a Primary Seed, then a Primary Object is created; if parentHandle
+    /// > references a Storage Parent, then an Ordinary Object is created; and if parentHandle
+    /// > references a Derivation Parent, then a Derived Object is generated.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// #![allow(deprecated)]
+    /// use std::convert::TryFrom;
+    /// use tss_esapi::{
+    ///     Context, TctiNameConf,
+    ///     interface_types::{
+    ///         algorithm::{HashingAlgorithm, RsaSchemeAlgorithm},
+    ///         key_bits::RsaKeyBits,
+    ///         reserved_handles::Hierarchy,
+    ///     },
+    ///     structures::{
+    ///         PublicTemplate, RsaExponent, RsaScheme, SymmetricDefinitionObject,
+    ///     },
+    ///     utils::{
+    ///         create_restricted_decryption_rsa_public,
+    ///         create_unrestricted_signing_rsa_public,
+    ///     },
+    /// };
+    ///
+    /// let mut context = Context::new(
+    ///     TctiNameConf::from_environment_variable().expect("Failed to get TCTI"),
+    /// )
+    /// .expect("Failed to create Context");
+    /// let parent_public = create_restricted_decryption_rsa_public(
+    ///     SymmetricDefinitionObject::AES_256_CFB,
+    ///     RsaKeyBits::Rsa2048,
+    ///     RsaExponent::default(),
+    /// )
+    /// .expect("Failed to create parent public area");
+    /// let child_public = create_unrestricted_signing_rsa_public(
+    ///     RsaScheme::create(RsaSchemeAlgorithm::RsaSsa, Some(HashingAlgorithm::Sha256))
+    ///         .expect("Failed to create RSA scheme"),
+    ///     RsaKeyBits::Rsa2048,
+    ///     RsaExponent::default(),
+    /// )
+    /// .expect("Failed to create child public area");
+    ///
+    /// context
+    ///     .execute_with_nullauth_session(|ctx| {
+    ///         let parent_handle = ctx
+    ///             .create_primary(Hierarchy::Owner, parent_public, None, None, None, None)?
+    ///             .key_handle;
+    ///         let result = ctx.create_loaded(
+    ///             parent_handle.into(),
+    ///             PublicTemplate::try_from(child_public)?,
+    ///             None,
+    ///             None,
+    ///         )?;
+    ///
+    ///         let (loaded_public, _, _) = ctx.read_public(result.key_handle)?;
+    ///         assert_eq!(loaded_public, result.out_public);
+    ///         ctx.flush_context(result.key_handle.into())?;
+    ///         ctx.flush_context(parent_handle.into())
+    ///     })
+    ///     .expect("Failed to create and load object");
+    /// ```
+    #[deprecated(
+        note = "TPM2_CreateLoaded was deprecated in TPM 2.0 Library Specification version 184"
+    )]
+    pub fn create_loaded(
+        &mut self,
+        parent_handle: ObjectHandle,
+        public_template: PublicTemplate,
+        auth_value: Option<Auth>,
+        sensitive_data: Option<SensitiveData>,
+    ) -> Result<CreateLoadedResult> {
+        let input_parameters = CreateLoadedCommandInputHandler::create(
+            parent_handle,
+            public_template,
+            auth_value,
+            sensitive_data,
+        )?;
+        let mut object_handle = ObjectHandle::None.into();
+        let mut out_private_ptr = null_mut();
+        let mut out_public_ptr = null_mut();
+
+        ReturnCode::ensure_success(
+            unsafe {
+                Esys_CreateLoaded(
+                    self.mut_context(),
+                    input_parameters.ffi_parent_handle(),
+                    self.required_session_1()?,
+                    self.optional_session_2(),
+                    self.optional_session_3(),
+                    input_parameters.ffi_in_sensitive(),
+                    input_parameters.ffi_in_public(),
+                    &mut object_handle,
+                    &mut out_private_ptr,
+                    &mut out_public_ptr,
+                )
+            },
+            |ret| {
+                error!("Error creating and loading object: {:#010X}", ret);
+            },
+        )?;
+
+        let out_private = unsafe { take_from_esys(out_private_ptr) }.and_then(Private::try_from);
+        let out_public = unsafe { take_from_esys(out_public_ptr) }.and_then(Public::try_from);
+        let key_handle = KeyHandle::from(object_handle);
+        self.handle_manager
+            .add_handle(key_handle.into(), HandleDropAction::Flush)?;
+
+        Ok(CreateLoadedResult {
+            key_handle,
+            out_private: out_private?,
+            out_public: out_public?,
+        })
+    }
 }

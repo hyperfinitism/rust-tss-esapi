@@ -36,6 +36,39 @@ mod test_create {
     }
 }
 
+#[allow(deprecated)]
+mod test_create_loaded {
+    use crate::common::{create_ctx_with_session, decryption_key_pub, signing_key_pub};
+    use std::convert::TryFrom;
+    use tss_esapi::{interface_types::reserved_handles::Hierarchy, structures::PublicTemplate};
+
+    #[test]
+    fn test_create_loaded() {
+        let mut context = create_ctx_with_session();
+        let parent_handle = context
+            .create_primary(
+                Hierarchy::Owner,
+                decryption_key_pub(),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+            .key_handle;
+        let public_template = PublicTemplate::try_from(signing_key_pub()).unwrap();
+
+        let result = context
+            .create_loaded(parent_handle.into(), public_template, None, None)
+            .unwrap();
+
+        assert!(!result.out_private.is_empty());
+        let (loaded_public, _, _) = context.read_public(result.key_handle).unwrap();
+        assert_eq!(result.out_public, loaded_public);
+        context.flush_context(result.key_handle.into()).unwrap();
+    }
+}
+
 mod test_load {
     use crate::common::{create_ctx_with_session, decryption_key_pub, signing_key_pub};
     use tss_esapi::{interface_types::reserved_handles::Hierarchy, structures::Auth};
